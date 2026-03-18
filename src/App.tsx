@@ -81,6 +81,36 @@ export default function App() {
   }, [loading]);
 
   const [loadingStatus, setLoadingStatus] = useState("Fetching magic...");
+  const [continueWatching, setContinueWatching] = useState<any[]>([]);
+
+  // Load continue watching from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('continueWatching');
+    if (saved) {
+      try {
+        setContinueWatching(JSON.parse(saved));
+      } catch (e) {
+        console.error("Failed to parse continue watching", e);
+      }
+    }
+  }, []);
+
+  const saveContinueWatching = (anime: any, ep: number) => {
+    const newItem = {
+      id: anime.id,
+      title: anime.title?.english || anime.title?.romaji || anime.title,
+      image: anime.coverImage?.large || anime.image,
+      episode: ep,
+      timestamp: Date.now()
+    };
+    
+    setContinueWatching(prev => {
+      const filtered = prev.filter(item => item.id !== anime.id);
+      const updated = [newItem, ...filtered].slice(0, 10);
+      localStorage.setItem('continueWatching', JSON.stringify(updated));
+      return updated;
+    });
+  };
 
   const safeFetch = async (url: string, timeout = 60000, status?: string) => {
     if (status) setLoadingStatus(status);
@@ -129,21 +159,35 @@ export default function App() {
         safeFetch(`${API}/search?q=romance`, 45000)
       ]);
       
+      const filterLiveAction = (list: any[]) => {
+        if (!Array.isArray(list)) return [];
+        return list.filter(item => {
+          const title = (typeof item.title === 'string' ? item.title : (item.title?.english || item.title?.romaji || item.title?.native || "")).toLowerCase();
+          return !title.includes("live action");
+        });
+      };
+
       const newSections = [];
-      if (trendingData && trendingData.length > 0) {
-        newSections.push({ title: 'Trending Now', icon: <Flame className="text-orange-500" size={20} />, items: trendingData.slice(0, 8) });
+      const filteredTrending = filterLiveAction(trendingData);
+      const filteredSeasonal = filterLiveAction(seasonalData);
+      const filteredPopular = filterLiveAction(popularData);
+      const filteredAction = filterLiveAction(actionData);
+      const filteredRomance = filterLiveAction(romanceData);
+
+      if (filteredTrending.length > 0) {
+        newSections.push({ title: 'Trending Now', icon: <Flame className="text-orange-500" size={20} />, items: filteredTrending.slice(0, 8) });
       }
-      if (seasonalData && seasonalData.length > 0) {
-        newSections.push({ title: 'New in 2026', icon: <Star className="text-blue-400" size={20} />, items: seasonalData.slice(0, 8) });
+      if (filteredSeasonal.length > 0) {
+        newSections.push({ title: 'New in 2026', icon: <Star className="text-blue-400" size={20} />, items: filteredSeasonal.slice(0, 8) });
       }
-      if (popularData && popularData.length > 0) {
-        newSections.push({ title: 'Top Airing', icon: <Trophy className="text-yellow-500" size={20} />, items: popularData.slice(0, 8) });
+      if (filteredPopular.length > 0) {
+        newSections.push({ title: 'Top Airing', icon: <Trophy className="text-yellow-500" size={20} />, items: filteredPopular.slice(0, 8) });
       }
-      if (actionData && actionData.length > 0) {
-        newSections.push({ title: 'Action', icon: <Zap className="text-brand" size={20} />, items: actionData.slice(0, 8) });
+      if (filteredAction.length > 0) {
+        newSections.push({ title: 'Action', icon: <Zap className="text-brand" size={20} />, items: filteredAction.slice(0, 8) });
       }
-      if (romanceData && romanceData.length > 0) {
-        newSections.push({ title: 'Romance', icon: <Heart className="text-pink-500" size={20} />, items: romanceData.slice(0, 8) });
+      if (filteredRomance.length > 0) {
+        newSections.push({ title: 'Romance', icon: <Heart className="text-pink-500" size={20} />, items: filteredRomance.slice(0, 8) });
       }
 
       if (newSections.length > 0) {
@@ -152,10 +196,10 @@ export default function App() {
         console.warn("No sections loaded from API");
       }
       
-      if (trendingData && trendingData.length > 8) {
-        setSidebarTrending(trendingData.slice(8, 18));
-      } else if (popularData && popularData.length > 0) {
-        setSidebarTrending(popularData.slice(0, 10));
+      if (filteredTrending.length > 8) {
+        setSidebarTrending(filteredTrending.slice(8, 18));
+      } else if (filteredPopular.length > 0) {
+        setSidebarTrending(filteredPopular.slice(0, 10));
       }
     } catch (e) {
       console.error("Failed to load initial data", e);
@@ -174,7 +218,16 @@ export default function App() {
     setLoadingStatus(`Searching for "${searchQuery}"...`);
     try {
       const data = await safeFetch(`${API}/search?q=${encodeURIComponent(searchQuery)}`, 60000);
-      setResults(Array.isArray(data) ? data : []);
+      if (Array.isArray(data)) {
+        // Filter out live action from search results too
+        const filtered = data.filter(item => {
+          const title = (typeof item.title === 'string' ? item.title : (item.title?.english || item.title?.romaji || item.title?.native || "")).toLowerCase();
+          return !title.includes("live action");
+        });
+        setResults(filtered);
+      } else {
+        setResults([]);
+      }
     } catch (e) {
       console.error("Search failed", e);
     } finally {
@@ -182,7 +235,7 @@ export default function App() {
     }
   };
 
-  const selectAnime = async (anime: any) => {
+  const selectAnime = async (anime: any, initialEpisode?: number) => {
     const titleObj = anime.title;
     const title = typeof titleObj === 'string' ? titleObj : (titleObj?.english || titleObj?.romaji || titleObj?.native || "");
     
@@ -201,38 +254,53 @@ export default function App() {
     setLoadingStatus(`Loading ${cleanTitle}...`);
 
     try {
-      // Special handling for One Piece to avoid Live Action confusion
-      let searchTitle = cleanTitle;
-      if (cleanTitle.toLowerCase() === "one piece") {
-        searchTitle = "One Piece (TV Series 1999– )"; // More precise IMDb search term
-      }
+      const lowerTitle = cleanTitle.toLowerCase();
+      const isOnePiece = lowerTitle === "one piece" || (lowerTitle.includes("one piece") && !lowerTitle.includes("live action"));
+      
+      // Use cleanTitle for anime-info
+      const animeInfoTitle = isOnePiece ? "One Piece" : cleanTitle;
 
+      // Reduced timeout for One Piece meta since we have the hardcoded IMDB ID
       const [meta, imdbData] = await Promise.all([
-        safeFetch(`${API}/anime-info?title=${encodeURIComponent(searchTitle)}`),
-        safeFetch(`${API}/imdb?title=${encodeURIComponent(searchTitle)}`)
+        safeFetch(`${API}/anime-info?title=${encodeURIComponent(animeInfoTitle)}`, isOnePiece ? 20000 : 45000),
+        isOnePiece ? Promise.resolve({ imdb: "tt0388629" }) : safeFetch(`${API}/imdb?title=${encodeURIComponent(cleanTitle)}`, 45000)
       ]);
 
-      if (!meta || !imdbData || !imdbData.imdb) {
-        // Fallback: try searching without cleaning the title if the first attempt fails
-        const fallbackData = await safeFetch(`${API}/imdb?title=${encodeURIComponent(title)}`);
+      let finalImdbId = imdbData?.imdb;
+      
+      // If IMDB search failed or returned the Live Action (tt11737520), try a fallback
+      if (!finalImdbId || (finalImdbId === "tt11737520" && !isOnePiece)) {
+        // Try searching with "anime" suffix for better results
+        const fallbackData = await safeFetch(`${API}/imdb?title=${encodeURIComponent(cleanTitle + " anime")}`, 45000);
+        finalImdbId = fallbackData?.imdb;
         
-        if (!fallbackData || !fallbackData.imdb) {
-          console.warn("No stream found for this anime.");
-          setLoading(false);
-          return;
+        // If still no IMDB, try one last time with the original title but longer timeout
+        if (!finalImdbId) {
+          const lastResort = await safeFetch(`${API}/imdb?title=${encodeURIComponent(title)}`, 60000);
+          finalImdbId = lastResort?.imdb;
         }
-        
-        const finalImdbId = fallbackData.imdb;
-        setCurrentImdb(finalImdbId);
-        setSelectedAnime({ ...anime, ...(meta || {}), imdbId: finalImdbId });
-        processSelection(meta || {}, finalImdbId, cleanTitle);
+      }
+
+      // Final safety check for One Piece
+      if (isOnePiece) finalImdbId = "tt0388629";
+
+      if (!finalImdbId) {
+        console.warn("No stream found for this anime.");
+        setLoading(false);
         return;
       }
 
-      const imdbId = imdbData.imdb;
-      setCurrentImdb(imdbId);
-      setSelectedAnime({ ...anime, ...meta, imdbId });
-      processSelection(meta, imdbId, cleanTitle);
+      setCurrentImdb(finalImdbId);
+      
+      // Fallback metadata for One Piece if API fails
+      const finalMeta = meta || (isOnePiece ? {
+        totalEpisodes: 1100,
+        title: { english: "One Piece", romaji: "One Piece", native: "ワンピース" },
+        coverImage: { large: anime.coverImage?.large || anime.image }
+      } : {});
+
+      setSelectedAnime({ ...anime, ...finalMeta, imdbId: finalImdbId });
+      processSelection(finalMeta, finalImdbId, cleanTitle, initialEpisode);
 
     } catch (e) {
       console.error("Selection error:", e);
@@ -241,7 +309,7 @@ export default function App() {
     }
   };
 
-  const processSelection = (meta: any, imdbId: string, cleanTitle: string) => {
+  const processSelection = (meta: any, imdbId: string, cleanTitle: string, initialEpisode?: number) => {
     // BUILD episodeList
     let list: Episode[] = [];
     let totalEpsCount = 0;
@@ -282,11 +350,15 @@ export default function App() {
     setLoading(false);
 
     // Auto load progress
-    const saved = localStorage.getItem(imdbId);
-    if (saved) {
-      playEpisode(Number(saved), imdbId);
+    if (initialEpisode) {
+      playEpisode(initialEpisode, imdbId);
     } else {
-      playEpisode(1, imdbId);
+      const saved = localStorage.getItem(imdbId);
+      if (saved) {
+        playEpisode(Number(saved), imdbId);
+      } else {
+        playEpisode(1, imdbId);
+      }
     }
   };
 
@@ -297,6 +369,10 @@ export default function App() {
     const activeServer = currentServer || server;
     setCurrentEp(ep);
     localStorage.setItem(id, ep.toString());
+    
+    if (selectedAnime) {
+      saveContinueWatching(selectedAnime, ep);
+    }
 
     try {
       const data = await safeFetch(`${API}/stream?imdb=${id}&ep=${ep}`);
@@ -361,6 +437,12 @@ export default function App() {
     if (currentEp > 1) playEpisode(currentEp - 1);
   };
 
+  const skipIntro = () => {
+    if (videoRef.current) {
+      videoRef.current.currentTime += 85;
+    }
+  };
+
   const closePlayer = () => {
     setPlayerVisible(false);
     setStreamUrl('');
@@ -417,10 +499,13 @@ export default function App() {
             <div className="w-12 h-12 border-4 border-brand border-t-transparent rounded-full animate-spin"></div>
             <p className="text-zinc-500 font-medium animate-pulse">{loadingStatus}</p>
             <button 
-              onClick={() => { setLoading(false); loadInitialData(); }}
+              onClick={() => { 
+                setLoading(false); 
+                if (results.length === 0) loadInitialData(); 
+              }}
               className="mt-4 text-xs text-zinc-600 hover:text-brand underline"
             >
-              Taking too long? Click to retry
+              Taking too long? Click to cancel
             </button>
           </div>
         )}
@@ -442,7 +527,67 @@ export default function App() {
         )}
 
         {!loading && (sections.length > 0 || results.length > 0) && (
-          <div className="flex flex-col lg:flex-row gap-8">
+          <div className="space-y-12">
+            {/* Continue Watching Section */}
+            {continueWatching.length > 0 && !searchQuery && (
+              <section className="mb-12">
+                <div className="flex items-center justify-between mb-6 px-2">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-brand/10 rounded-xl">
+                      <Clock className="text-brand" size={20} />
+                    </div>
+                    <h2 className="text-xl md:text-2xl font-black tracking-tight uppercase italic">Continue Watching</h2>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      localStorage.removeItem('continueWatching');
+                      setContinueWatching([]);
+                    }}
+                    className="text-[10px] font-black text-zinc-500 hover:text-white transition-colors uppercase tracking-widest"
+                  >
+                    Clear All
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 md:gap-6">
+                  {continueWatching.map((item) => (
+                    <motion.div 
+                      key={item.id}
+                      whileHover={{ y: -5 }}
+                      onClick={() => {
+                        const fullAnime = sections.flatMap(s => s.items).find(a => a.id === item.id);
+                        selectAnime(fullAnime || { id: item.id, title: item.title, image: item.image }, item.episode);
+                      }}
+                      className="group cursor-pointer"
+                    >
+                      <div className="relative aspect-video rounded-2xl overflow-hidden bg-zinc-900 border border-white/5 shadow-2xl mb-3">
+                        <img 
+                          src={item.image} 
+                          alt={item.title}
+                          className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+                          referrerPolicy="no-referrer"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/20 to-transparent flex items-end p-3">
+                          <div className="w-full">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-[9px] font-black text-brand uppercase tracking-wider">Episode {item.episode}</span>
+                              <Play size={12} className="text-white opacity-0 group-hover:opacity-100 transition-opacity" fill="currentColor" />
+                            </div>
+                            <div className="h-1 w-full bg-white/10 rounded-full overflow-hidden">
+                              <div className="h-full bg-brand w-2/3"></div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <h3 className="font-bold text-xs truncate group-hover:text-brand transition-colors leading-tight">
+                        {item.title}
+                      </h3>
+                    </motion.div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            <div className="flex flex-col lg:flex-row gap-8">
             {/* Main Content */}
             <div className="flex-1 space-y-12">
               {results.length > 0 && (
@@ -523,8 +668,9 @@ export default function App() {
               </aside>
             )}
           </div>
-        )}
-      </main>
+        </div>
+      )}
+    </main>
 
       {/* Player Modal */}
       <AnimatePresence>
@@ -533,146 +679,195 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-black/95 flex flex-col"
+            className="fixed inset-0 z-[100] bg-black/98 flex flex-col backdrop-blur-sm"
           >
             {/* Player Header */}
-            <div className="glass border-b border-white/5 p-4 flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                <button onClick={closePlayer} className="p-2 hover:bg-white/10 rounded-full transition-colors">
-                  <X size={24} />
+            <div className="bg-zinc-900/80 backdrop-blur-xl border-b border-white/5 px-4 md:px-6 py-3 flex items-center justify-between sticky top-0 z-20">
+              <div className="flex items-center gap-4 min-w-0">
+                <button 
+                  onClick={closePlayer} 
+                  className="p-2 hover:bg-white/10 rounded-full transition-all active:scale-90"
+                  title="Close"
+                >
+                  <X size={22} className="text-zinc-400" />
                 </button>
-                <div>
-                  <h3 className="font-bold text-lg truncate max-w-[200px] md:max-w-md">
+                <div className="min-w-0">
+                  <h3 className="font-bold text-sm md:text-base truncate leading-tight text-zinc-100">
                     {selectedAnime?.title.english || selectedAnime?.title.romaji || selectedAnime?.title}
                   </h3>
-                  <div className="flex items-center gap-2">
-                    <p className="text-xs text-brand font-bold uppercase tracking-widest">Episode {currentEp}</p>
-                    <span className="text-zinc-600">•</span>
-                    <select 
-                      value={server} 
-                      onChange={(e) => handleServerChange(e.target.value)}
-                      className="bg-transparent text-[10px] font-bold uppercase tracking-widest text-zinc-400 focus:outline-none cursor-pointer hover:text-brand transition-colors"
-                    >
-                      <option value="primary">Primary (Kogemi)</option>
-                      <option value="backup">Backup (Kogemi)</option>
-                      <option value="vidsrc.to">Server 1 (Vidsrc)</option>
-                      <option value="vidsrc.me">Server 2 (Vidsrc)</option>
-                      <option value="vidsrc.xyz">Server 3 (Vidsrc)</option>
-                      <option value="embed.su">Server 4 (Embed.su)</option>
-                    </select>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="px-1.5 py-0.5 bg-brand/10 text-brand text-[9px] font-black rounded uppercase tracking-wider border border-brand/20">EPISODE {currentEp}</span>
+                    <span className="text-zinc-700 text-xs">•</span>
+                    <div className="relative group/server">
+                      <select 
+                        value={server} 
+                        onChange={(e) => handleServerChange(e.target.value)}
+                        className="bg-transparent text-[9px] font-black uppercase tracking-widest text-zinc-500 focus:outline-none cursor-pointer hover:text-zinc-300 transition-colors appearance-none pr-4"
+                      >
+                        <option value="primary">Primary (Kogemi)</option>
+                        <option value="backup">Backup (Kogemi)</option>
+                        <option value="vidsrc.to">Server 1 (Vidsrc)</option>
+                        <option value="vidsrc.me">Server 2 (Vidsrc)</option>
+                        <option value="vidsrc.xyz">Server 3 (Vidsrc)</option>
+                        <option value="embed.su">Server 4 (Embed.su)</option>
+                      </select>
+                      <div className="absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-600 group-hover/server:text-zinc-400">
+                        <ChevronRight size={10} className="rotate-90" />
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
+              
               <div className="flex items-center gap-2">
-                <button onClick={prevEp} className="p-3 hover:bg-white/10 rounded-xl transition-colors disabled:opacity-30" disabled={currentEp <= 1}>
-                  <SkipBack size={20} fill="currentColor" />
-                </button>
-                <button onClick={nextEp} className="p-3 hover:bg-white/10 rounded-xl transition-colors disabled:opacity-30" disabled={currentEp >= episodeList.length}>
-                  <SkipForward size={20} fill="currentColor" />
-                </button>
+                <div className="flex items-center bg-white/5 rounded-xl p-1 border border-white/5">
+                  <button 
+                    onClick={prevEp} 
+                    className="p-2 hover:bg-white/10 rounded-lg transition-all disabled:opacity-10 disabled:cursor-not-allowed text-zinc-400" 
+                    disabled={currentEp <= 1}
+                  >
+                    <SkipBack size={16} fill="currentColor" />
+                  </button>
+                  <button 
+                    onClick={nextEp} 
+                    className="p-2 hover:bg-white/10 rounded-lg transition-all disabled:opacity-10 disabled:cursor-not-allowed text-zinc-400" 
+                    disabled={currentEp >= episodeList.length}
+                  >
+                    <SkipForward size={16} fill="currentColor" />
+                  </button>
+                </div>
               </div>
             </div>
 
-            <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+            <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
               {/* Video Area */}
-              <div className="flex-1 bg-black relative flex flex-col">
-                <div className="flex-1 relative group/player">
-                  {streamUrl ? (
-                    isHls ? (
-                      <div className="w-full h-full relative">
-                        <video 
-                          ref={videoRef}
-                          className="w-full h-full"
-                          onEnded={handleVideoEnded}
-                          controls
-                          crossOrigin="anonymous"
-                        >
-                          {subtitles.map((sub, i) => (
-                            <track 
-                              key={i}
-                              kind="subtitles"
-                              src={sub.file}
-                              label={sub.label}
-                              default={i === 0}
-                            />
-                          ))}
-                        </video>
-                      </div>
+              <div className="flex-1 bg-black relative flex flex-col overflow-y-auto lg:overflow-hidden no-scrollbar">
+                <div className="w-full max-w-6xl mx-auto flex-1 flex flex-col justify-center p-0 md:p-4 lg:p-8">
+                  <div className="relative aspect-video w-full max-h-[80vh] bg-zinc-900 shadow-2xl shadow-black/50 rounded-none md:rounded-2xl overflow-hidden border border-white/5">
+                    {streamUrl ? (
+                      isHls ? (
+                        <div className="w-full h-full relative">
+                          <video 
+                            ref={videoRef}
+                            className="w-full h-full"
+                            onEnded={handleVideoEnded}
+                            controls
+                            crossOrigin="anonymous"
+                          >
+                            {subtitles.map((sub, i) => (
+                              <track 
+                                key={i}
+                                kind="subtitles"
+                                src={sub.file}
+                                label={sub.label}
+                                default={i === 0}
+                              />
+                            ))}
+                          </video>
+                        </div>
+                      ) : (
+                        <iframe 
+                          src={streamUrl} 
+                          className="w-full h-full border-none"
+                          allowFullScreen
+                          allow="autoplay; encrypted-media"
+                        ></iframe>
+                      )
                     ) : (
-                      <iframe 
-                        src={streamUrl} 
-                        className="w-full h-full border-none"
-                        allowFullScreen
-                      ></iframe>
-                    )
-                  ) : (
-                    <div className="absolute inset-0 flex items-center justify-center animate-pulse text-zinc-700">
-                      Loading stream...
-                    </div>
-                  )}
-                </div>
-                
-                {/* Player Footer Controls */}
-                <div className="glass border-t border-white/5 p-4 flex items-center justify-between">
-                  <div className="flex items-center gap-6">
-                    <button className="flex items-center gap-2 text-sm font-bold hover:text-brand transition-colors">
-                      <Heart size={18} /> Favorite
-                    </button>
-                    <button className="flex items-center gap-2 text-sm font-bold hover:text-brand transition-colors">
-                      <Share2 size={18} /> Share
-                    </button>
-                    <button className="flex items-center gap-2 text-sm font-bold hover:text-brand transition-colors">
-                      <MessageSquare size={18} /> Comments
-                    </button>
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-zinc-900">
+                        <div className="w-10 h-10 border-2 border-brand border-t-transparent rounded-full animate-spin"></div>
+                        <p className="text-zinc-500 text-xs font-bold uppercase tracking-widest animate-pulse">Loading stream...</p>
+                      </div>
+                    )}
                   </div>
-                  <div className="flex items-center gap-4">
-                    <div className="text-xs text-zinc-500 font-bold uppercase tracking-widest">Auto Next</div>
-                    <div 
-                      onClick={() => setAutoNext(!autoNext)}
-                      className={`w-10 h-5 rounded-full relative cursor-pointer transition-colors ${autoNext ? 'bg-brand' : 'bg-zinc-800'}`}
-                    >
-                      <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${autoNext ? 'right-1' : 'left-1'}`}></div>
+                  
+                  {/* Player Footer Controls - Mobile Optimized */}
+                  <div className="mt-4 px-4 md:px-0 flex flex-col sm:flex-row items-center justify-between gap-4">
+                    <div className="flex items-center gap-4 md:gap-8 overflow-x-auto no-scrollbar w-full sm:w-auto">
+                      <button className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wider text-zinc-400 hover:text-brand transition-colors whitespace-nowrap">
+                        <Heart size={16} /> Favorite
+                      </button>
+                      <button className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wider text-zinc-400 hover:text-brand transition-colors whitespace-nowrap">
+                        <Share2 size={16} /> Share
+                      </button>
+                      <button className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wider text-zinc-400 hover:text-brand transition-colors whitespace-nowrap">
+                        <MessageSquare size={16} /> Comments
+                      </button>
+                    </div>
+                    
+                    <div className="flex items-center justify-between w-full sm:w-auto gap-4 bg-white/5 px-4 py-2 rounded-2xl border border-white/5">
+                      {isHls && (
+                        <button 
+                          onClick={skipIntro}
+                          className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-brand hover:text-white transition-colors"
+                        >
+                          <Zap size={14} fill="currentColor" /> Skip Intro
+                        </button>
+                      )}
+                      {isHls && <div className="h-4 w-px bg-white/10"></div>}
+                      <div className="flex items-center gap-3">
+                        <div className="text-[10px] text-zinc-500 font-black uppercase tracking-widest">Auto Next</div>
+                        <div 
+                          onClick={() => setAutoNext(!autoNext)}
+                          className={`w-9 h-5 rounded-full relative cursor-pointer transition-all duration-300 ${autoNext ? 'bg-brand shadow-lg shadow-brand/20' : 'bg-zinc-800'}`}
+                        >
+                          <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all duration-300 ${autoNext ? 'right-1' : 'left-1'}`}></div>
+                        </div>
+                      </div>
+                      <div className="sm:hidden h-4 w-px bg-white/10"></div>
+                      <div className="sm:hidden flex items-center gap-4">
+                        <button onClick={prevEp} disabled={currentEp <= 1} className="text-zinc-400 disabled:opacity-20"><SkipBack size={18} fill="currentColor" /></button>
+                        <button onClick={nextEp} disabled={currentEp >= episodeList.length} className="text-zinc-400 disabled:opacity-20"><SkipForward size={18} fill="currentColor" /></button>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
 
               {/* Episode Sidebar */}
-              <div className="w-full md:w-80 glass border-l border-white/5 flex flex-col">
-                <div className="p-4 border-b border-white/5 flex flex-col gap-4">
+              <div className="w-full lg:w-96 bg-zinc-900/50 border-t lg:border-t-0 lg:border-l border-white/5 flex flex-col h-[40vh] lg:h-full">
+                <div className="p-5 border-b border-white/5 flex flex-col gap-4">
                   <div className="flex items-center justify-between">
-                    <h4 className="font-bold flex items-center gap-2"><LayoutGrid size={18} className="text-brand" /> List of Episodes</h4>
-                    <span className="text-xs text-zinc-500 font-mono">{episodeList.length} Total</span>
+                    <h4 className="font-bold text-sm flex items-center gap-2">
+                      <List size={18} className="text-brand" /> 
+                      Episodes
+                    </h4>
+                    <span className="bg-white/5 px-2 py-1 rounded text-[10px] font-mono text-zinc-500 border border-white/5">
+                      {episodeList.length} Total
+                    </span>
                   </div>
+                  
                   {episodeList.length > 50 && (
-                    <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
+                    <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar scroll-smooth">
                       {Array.from({ length: Math.ceil(episodeList.length / 50) }, (_, i) => (
                         <button
                           key={i}
                           onClick={() => setCurrentSeason(i + 1)}
-                          className={`px-3 py-1.5 rounded-lg text-[10px] font-bold whitespace-nowrap transition-all ${
+                          className={`px-4 py-2 rounded-xl text-[10px] font-black whitespace-nowrap transition-all border ${
                             currentSeason === i + 1 
-                              ? 'bg-brand text-white' 
-                              : 'bg-white/5 text-zinc-500 hover:bg-white/10'
+                              ? 'bg-brand border-brand text-white shadow-lg shadow-brand/20' 
+                              : 'bg-white/5 border-white/5 text-zinc-500 hover:bg-white/10 hover:text-zinc-300'
                           }`}
                         >
-                          EP {i * 50 + 1}-{Math.min((i + 1) * 50, episodeList.length)}
+                          {i * 50 + 1}-{Math.min((i + 1) * 50, episodeList.length)}
                         </button>
                       ))}
                     </div>
                   )}
                 </div>
-                <div className="flex-1 overflow-y-auto p-4 grid grid-cols-4 md:grid-cols-4 gap-2 content-start">
+                
+                <div className="flex-1 overflow-y-auto p-5 grid grid-cols-5 sm:grid-cols-8 lg:grid-cols-4 gap-2.5 content-start no-scrollbar">
                   {episodeList.slice((currentSeason - 1) * 50, currentSeason * 50).map((ep, index) => {
                     const epNum = ep.number || ((currentSeason - 1) * 50 + index + 1);
+                    const isActive = currentEp === epNum;
                     return (
                       <button
                         key={index}
                         onClick={() => playEpisode(epNum)}
-                        className={`aspect-square flex items-center justify-center rounded-lg text-sm font-bold transition-all ${
-                          currentEp === epNum 
-                            ? 'bg-brand text-white shadow-lg shadow-brand/40 scale-105' 
-                            : 'bg-white/5 hover:bg-white/10 text-zinc-400'
+                        className={`aspect-square flex items-center justify-center rounded-xl text-xs font-black transition-all duration-300 border ${
+                          isActive 
+                            ? 'bg-brand border-brand text-white shadow-xl shadow-brand/30 scale-105 z-10' 
+                            : 'bg-white/5 border-white/5 hover:bg-white/10 text-zinc-500 hover:text-zinc-300'
                         }`}
                       >
                         {epNum}
@@ -707,39 +902,44 @@ function AnimeCard({ anime, onClick }: { anime: any, onClick: () => void, key?: 
   const title = anime.title?.english || anime.title?.romaji || anime.title;
   return (
     <motion.div 
-      whileHover={{ y: -8 }}
+      whileHover={{ y: -5 }}
       onClick={onClick}
       className="group cursor-pointer"
     >
-      <div className="relative aspect-[2/3] rounded-2xl overflow-hidden glass border border-white/10 shadow-xl mb-3">
+      <div className="relative aspect-[2/3] rounded-2xl overflow-hidden bg-zinc-900 border border-white/5 shadow-2xl mb-3">
         <img 
           src={anime.coverImage?.large || anime.image} 
           alt={typeof title === 'string' ? title : ""}
-          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+          className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
           referrerPolicy="no-referrer"
+          loading="lazy"
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-4">
-          <div className="w-full">
-            <button className="w-full bg-brand py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-lg shadow-brand/40">
+        <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-300 flex items-end p-4">
+          <div className="w-full transform translate-y-4 group-hover:translate-y-0 transition-transform duration-300">
+            <button className="w-full bg-brand py-2.5 rounded-xl text-[10px] font-black flex items-center justify-center gap-2 shadow-xl shadow-brand/40">
               <Play size={14} fill="currentColor" /> WATCH NOW
             </button>
           </div>
         </div>
-        <div className="absolute top-2 right-2 bg-brand/90 backdrop-blur-md px-2 py-1 rounded-lg text-[10px] font-black text-white shadow-lg">
+        <div className="absolute top-2 right-2 bg-black/60 backdrop-blur-md px-2 py-1 rounded-lg text-[9px] font-black text-white border border-white/10">
           HD
         </div>
-        <div className="absolute bottom-2 left-2 flex gap-1">
-          <div className="bg-white/10 backdrop-blur-md px-1.5 py-0.5 rounded text-[8px] font-bold text-white uppercase">
-            {anime.type || 'TV'}
+        {anime.type && (
+          <div className="absolute top-2 left-2 bg-brand/90 backdrop-blur-md px-2 py-1 rounded-lg text-[9px] font-black text-white shadow-lg">
+            {anime.type}
           </div>
-        </div>
+        )}
       </div>
-      <h3 className="font-bold text-sm truncate group-hover:text-brand transition-colors">
+      <h3 className="font-bold text-xs md:text-sm truncate group-hover:text-brand transition-colors leading-tight">
         {title}
       </h3>
-      <div className="flex items-center gap-2 mt-1 opacity-50">
-        <Clock size={12} />
-        <span className="text-[10px] font-bold uppercase tracking-wider">Sub | Dub</span>
+      <div className="flex items-center gap-2 mt-1.5">
+        <div className="flex items-center gap-1 text-[9px] font-black text-zinc-500 uppercase tracking-wider">
+          <Star size={10} className="text-yellow-500" fill="currentColor" />
+          <span>{anime.averageScore ? (anime.averageScore / 10).toFixed(1) : '8.5'}</span>
+        </div>
+        <span className="text-zinc-800 text-xs">•</span>
+        <span className="text-[9px] font-black text-zinc-600 uppercase tracking-wider">Sub | Dub</span>
       </div>
     </motion.div>
   );
