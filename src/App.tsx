@@ -72,11 +72,11 @@ export default function App() {
     if (sections.length > 0) return;
     setLoading(true);
     try {
-      const [trendingData, popularData, latestData, seasonalData, actionData, romanceData] = await Promise.all([
-        fetch(`${API}/search?q=airing`).then(res => res.json()).catch(() => []),
+      // Using more reliable queries that are likely to return data
+      const [trendingData, popularData, seasonalData, actionData, romanceData] = await Promise.all([
+        fetch(`${API}/search?q=trending`).then(res => res.json()).catch(() => []),
         fetch(`${API}/search?q=popular`).then(res => res.json()).catch(() => []),
         fetch(`${API}/search?q=2026`).then(res => res.json()).catch(() => []),
-        fetch(`${API}/search?q=winter 2026`).then(res => res.json()).catch(() => []),
         fetch(`${API}/search?q=action`).then(res => res.json()).catch(() => []),
         fetch(`${API}/search?q=romance`).then(res => res.json()).catch(() => [])
       ]);
@@ -86,10 +86,7 @@ export default function App() {
         newSections.push({ title: 'Trending Now', icon: <Flame className="text-orange-500" size={20} />, items: trendingData.slice(0, 8) });
       }
       if (Array.isArray(seasonalData) && seasonalData.length > 0) {
-        newSections.push({ title: 'Winter 2026 Seasonal', icon: <Star className="text-blue-400" size={20} />, items: seasonalData.slice(0, 8) });
-      }
-      if (Array.isArray(latestData) && latestData.length > 0) {
-        newSections.push({ title: 'New Releases 2026', icon: <Zap className="text-brand" size={20} />, items: latestData.slice(0, 8) });
+        newSections.push({ title: 'New in 2026', icon: <Star className="text-blue-400" size={20} />, items: seasonalData.slice(0, 8) });
       }
       if (Array.isArray(popularData) && popularData.length > 0) {
         newSections.push({ title: 'Top Airing', icon: <Trophy className="text-yellow-500" size={20} />, items: popularData.slice(0, 8) });
@@ -138,7 +135,12 @@ export default function App() {
   const selectAnime = async (anime: any) => {
     const titleObj = anime.title;
     const title = typeof titleObj === 'string' ? titleObj : (titleObj?.english || titleObj?.romaji || titleObj?.native || "");
-    const cleanTitle = title.split(":")[0].trim();
+    
+    // Improved title cleaning: don't split if it's a "Live Action" title
+    let cleanTitle = title;
+    if (!title.toLowerCase().includes("live action")) {
+      cleanTitle = title.split(":")[0].trim();
+    }
     
     if (!cleanTitle) {
       alert("Invalid anime title");
@@ -148,18 +150,35 @@ export default function App() {
     setLoading(true);
 
     try {
+      // Special handling for One Piece to avoid Live Action confusion
+      let searchTitle = cleanTitle;
+      if (cleanTitle.toLowerCase() === "one piece") {
+        searchTitle = "One Piece (1999)"; // Specifically target the anime start year
+      }
+
       const [metaRes, imdbRes] = await Promise.all([
-        fetch(`${API}/anime-info?title=${encodeURIComponent(cleanTitle)}`),
-        fetch(`${API}/imdb?title=${encodeURIComponent(cleanTitle)}`)
+        fetch(`${API}/anime-info?title=${encodeURIComponent(searchTitle)}`),
+        fetch(`${API}/imdb?title=${encodeURIComponent(searchTitle)}`)
       ]);
+
+      if (!metaRes.ok || !imdbRes.ok) {
+        throw new Error("API request failed");
+      }
 
       const meta = await metaRes.json();
       const imdbData = await imdbRes.json();
 
-      if (!imdbData.imdb) {
-        alert("No stream found for this anime");
-        setLoading(false);
-        return;
+      if (!imdbData || !imdbData.imdb) {
+        // Fallback: try searching without cleaning the title if the first attempt fails
+        const fallbackRes = await fetch(`${API}/imdb?title=${encodeURIComponent(title)}`);
+        const fallbackData = await fallbackRes.json();
+        
+        if (!fallbackData || !fallbackData.imdb) {
+          alert("No stream found for this anime. Please try another title.");
+          setLoading(false);
+          return;
+        }
+        imdbData.imdb = fallbackData.imdb;
       }
 
       const imdbId = imdbData.imdb;
