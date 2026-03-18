@@ -1,3 +1,4 @@
+import axios from 'axios';
 import Hls from 'hls.js';
 import React, { useState, useEffect, useRef } from 'react';
 import { Search, Play, ChevronRight, History, Zap, TrendingUp, X, SkipForward, SkipBack, LayoutGrid, Star, Clock, Info, List, Heart, Share2, MessageSquare, Flame, Trophy, Settings, Maximize, Volume2, VolumeX } from 'lucide-react';
@@ -68,47 +69,96 @@ export default function App() {
     return () => clearInterval(interval);
   }, [autoNext, playerVisible, currentEp]);
 
+  useEffect(() => {
+    let timer: any;
+    if (loading) {
+      timer = setTimeout(() => {
+        setLoading(false);
+        console.warn("Loading timed out after 120s");
+      }, 120000);
+    }
+    return () => clearTimeout(timer);
+  }, [loading]);
+
+  const [loadingStatus, setLoadingStatus] = useState("Fetching magic...");
+
+  const safeFetch = async (url: string, timeout = 60000, status?: string) => {
+    if (status) setLoadingStatus(status);
+    let attempts = 0;
+    const maxAttempts = 2;
+    
+    while (attempts < maxAttempts) {
+      try {
+        const response = await axios.get(url, { 
+          timeout,
+          headers: { 'Accept': 'application/json' }
+        });
+        return response.data;
+      } catch (e: any) {
+        attempts++;
+        const isTimeout = e.code === 'ECONNABORTED' || e.message?.includes('timeout');
+        console.warn(`Attempt ${attempts} failed for ${url}:`, e.message);
+        
+        if (attempts >= maxAttempts) {
+          console.error(`Fetch failed for ${url} after ${maxAttempts} attempts`);
+          return null;
+        }
+        
+        if (status) setLoadingStatus(`${status} (Retrying...)`);
+        // Wait 2 seconds before retry
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+    return null;
+  };
+
   const loadInitialData = async () => {
-    if (sections.length > 0) return;
+    if (sections.length > 0 || loading) return;
     setLoading(true);
+    setLoadingStatus("Waking up the server...");
+    
     try {
-      // Using more reliable queries that are likely to return data
-      const [trendingData, popularData, seasonalData, actionData, romanceData] = await Promise.all([
-        fetch(`${API}/search?q=trending`).then(res => res.json()).catch(() => []),
-        fetch(`${API}/search?q=popular`).then(res => res.json()).catch(() => []),
-        fetch(`${API}/search?q=2026`).then(res => res.json()).catch(() => []),
-        fetch(`${API}/search?q=action`).then(res => res.json()).catch(() => []),
-        fetch(`${API}/search?q=romance`).then(res => res.json()).catch(() => [])
+      // First, try to wake up the API with trending
+      const trendingData = await safeFetch(`${API}/search?q=trending`, 60000, "Loading trending anime...");
+      
+      // Even if trending fails, we try the others
+      const [popularData, seasonalData, actionData, romanceData] = await Promise.all([
+        safeFetch(`${API}/search?q=popular`, 45000),
+        safeFetch(`${API}/search?q=2026`, 45000),
+        safeFetch(`${API}/search?q=action`, 45000),
+        safeFetch(`${API}/search?q=romance`, 45000)
       ]);
       
       const newSections = [];
-      if (Array.isArray(trendingData) && trendingData.length > 0) {
+      if (trendingData && trendingData.length > 0) {
         newSections.push({ title: 'Trending Now', icon: <Flame className="text-orange-500" size={20} />, items: trendingData.slice(0, 8) });
       }
-      if (Array.isArray(seasonalData) && seasonalData.length > 0) {
+      if (seasonalData && seasonalData.length > 0) {
         newSections.push({ title: 'New in 2026', icon: <Star className="text-blue-400" size={20} />, items: seasonalData.slice(0, 8) });
       }
-      if (Array.isArray(popularData) && popularData.length > 0) {
+      if (popularData && popularData.length > 0) {
         newSections.push({ title: 'Top Airing', icon: <Trophy className="text-yellow-500" size={20} />, items: popularData.slice(0, 8) });
       }
-      if (Array.isArray(actionData) && actionData.length > 0) {
+      if (actionData && actionData.length > 0) {
         newSections.push({ title: 'Action', icon: <Zap className="text-brand" size={20} />, items: actionData.slice(0, 8) });
       }
-      if (Array.isArray(romanceData) && romanceData.length > 0) {
+      if (romanceData && romanceData.length > 0) {
         newSections.push({ title: 'Romance', icon: <Heart className="text-pink-500" size={20} />, items: romanceData.slice(0, 8) });
       }
 
       if (newSections.length > 0) {
         setSections(newSections);
+      } else {
+        console.warn("No sections loaded from API");
       }
       
-      if (Array.isArray(trendingData) && trendingData.length > 8) {
+      if (trendingData && trendingData.length > 8) {
         setSidebarTrending(trendingData.slice(8, 18));
-      } else if (Array.isArray(popularData) && popularData.length > 0) {
+      } else if (popularData && popularData.length > 0) {
         setSidebarTrending(popularData.slice(0, 10));
       }
     } catch (e) {
-      console.error("Failed to load sections", e);
+      console.error("Failed to load initial data", e);
     } finally {
       setLoading(false);
     }
@@ -121,9 +171,9 @@ export default function App() {
       return;
     }
     setLoading(true);
+    setLoadingStatus(`Searching for "${searchQuery}"...`);
     try {
-      const res = await fetch(`${API}/search?q=${encodeURIComponent(searchQuery)}`);
-      const data = await res.json();
+      const data = await safeFetch(`${API}/search?q=${encodeURIComponent(searchQuery)}`, 60000);
       setResults(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error("Search failed", e);
@@ -143,95 +193,100 @@ export default function App() {
     }
     
     if (!cleanTitle) {
-      alert("Invalid anime title");
+      console.error("Invalid anime title");
       return;
     }
 
     setLoading(true);
+    setLoadingStatus(`Loading ${cleanTitle}...`);
 
     try {
       // Special handling for One Piece to avoid Live Action confusion
       let searchTitle = cleanTitle;
       if (cleanTitle.toLowerCase() === "one piece") {
-        searchTitle = "One Piece (1999)"; // Specifically target the anime start year
+        searchTitle = "One Piece (TV Series 1999– )"; // More precise IMDb search term
       }
 
-      const [metaRes, imdbRes] = await Promise.all([
-        fetch(`${API}/anime-info?title=${encodeURIComponent(searchTitle)}`),
-        fetch(`${API}/imdb?title=${encodeURIComponent(searchTitle)}`)
+      const [meta, imdbData] = await Promise.all([
+        safeFetch(`${API}/anime-info?title=${encodeURIComponent(searchTitle)}`),
+        safeFetch(`${API}/imdb?title=${encodeURIComponent(searchTitle)}`)
       ]);
 
-      if (!metaRes.ok || !imdbRes.ok) {
-        throw new Error("API request failed");
-      }
-
-      const meta = await metaRes.json();
-      const imdbData = await imdbRes.json();
-
-      if (!imdbData || !imdbData.imdb) {
+      if (!meta || !imdbData || !imdbData.imdb) {
         // Fallback: try searching without cleaning the title if the first attempt fails
-        const fallbackRes = await fetch(`${API}/imdb?title=${encodeURIComponent(title)}`);
-        const fallbackData = await fallbackRes.json();
+        const fallbackData = await safeFetch(`${API}/imdb?title=${encodeURIComponent(title)}`);
         
         if (!fallbackData || !fallbackData.imdb) {
-          alert("No stream found for this anime. Please try another title.");
+          console.warn("No stream found for this anime.");
           setLoading(false);
           return;
         }
-        imdbData.imdb = fallbackData.imdb;
+        
+        const finalImdbId = fallbackData.imdb;
+        setCurrentImdb(finalImdbId);
+        setSelectedAnime({ ...anime, ...(meta || {}), imdbId: finalImdbId });
+        processSelection(meta || {}, finalImdbId, cleanTitle);
+        return;
       }
 
       const imdbId = imdbData.imdb;
       setCurrentImdb(imdbId);
-      setSelectedAnime({ ...anime, ...meta });
-
-      // BUILD episodeList
-      let list: Episode[] = [];
-      let totalEpsCount = Number(meta.totalEpisodes || (Array.isArray(meta.episodes) ? meta.episodes.length : meta.episodes)) || 0;
-
-      // Fallback logic from user example - Improved to handle "1 episode" bug
-      const t = cleanTitle.toLowerCase();
-      if (t.includes("one piece")) {
-        totalEpsCount = Math.max(totalEpsCount, 1100);
-      } else if (t.includes("naruto shippuden")) {
-        totalEpsCount = Math.max(totalEpsCount, 500);
-      } else if (t.includes("naruto")) {
-        totalEpsCount = Math.max(totalEpsCount, 220);
-      } else if (t.includes("bleach")) {
-        totalEpsCount = Math.max(totalEpsCount, 366);
-      } else if (totalEpsCount <= 1 && !meta.type?.toLowerCase().includes("movie")) {
-        totalEpsCount = 24; 
-      }
-
-      // If meta.episodes is incomplete, generate the full list
-      if (Array.isArray(meta.episodes) && meta.episodes.length >= totalEpsCount) {
-        list = meta.episodes;
-      } else {
-        list = Array.from({ length: totalEpsCount }, (_, i) => ({ number: i + 1 }));
-      }
-
-      if (list.length === 0) {
-        alert("Episodes not available for this title");
-        setLoading(false);
-        return;
-      }
-
-      setEpisodeList(list);
-      setPlayerVisible(true);
-
-      // Auto load progress
-      const saved = localStorage.getItem(imdbId);
-      if (saved) {
-        playEpisode(Number(saved), imdbId);
-      } else {
-        playEpisode(1, imdbId);
-      }
+      setSelectedAnime({ ...anime, ...meta, imdbId });
+      processSelection(meta, imdbId, cleanTitle);
 
     } catch (e) {
       console.error("Selection error:", e);
-      alert("Failed to load anime info. Please try again.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const processSelection = (meta: any, imdbId: string, cleanTitle: string) => {
+    // BUILD episodeList
+    let list: Episode[] = [];
+    let totalEpsCount = 0;
+    
+    if (meta) {
+      totalEpsCount = Number(meta.totalEpisodes || (Array.isArray(meta.episodes) ? meta.episodes.length : meta.episodes)) || 0;
+    }
+
+    // Fallback logic from user example - Improved to handle "1 episode" bug
+    const t = cleanTitle.toLowerCase();
+    if (t.includes("one piece")) {
+      totalEpsCount = Math.max(totalEpsCount, 1100);
+    } else if (t.includes("naruto shippuden")) {
+      totalEpsCount = Math.max(totalEpsCount, 500);
+    } else if (t.includes("naruto")) {
+      totalEpsCount = Math.max(totalEpsCount, 220);
+    } else if (t.includes("bleach")) {
+      totalEpsCount = Math.max(totalEpsCount, 366);
+    } else if (totalEpsCount <= 1 && meta && !meta.type?.toLowerCase().includes("movie")) {
+      totalEpsCount = 24; 
+    }
+
+    // If meta.episodes is incomplete, generate the full list
+    if (meta && Array.isArray(meta.episodes) && meta.episodes.length >= totalEpsCount) {
+      list = meta.episodes;
+    } else {
+      list = Array.from({ length: Math.max(1, totalEpsCount) }, (_, i) => ({ number: i + 1 }));
+    }
+
+    if (list.length === 0) {
+      console.error("Episodes not available for this title");
+      setLoading(false);
+      return;
+    }
+
+    setEpisodeList(list);
+    setPlayerVisible(true);
+    setLoading(false);
+
+    // Auto load progress
+    const saved = localStorage.getItem(imdbId);
+    if (saved) {
+      playEpisode(Number(saved), imdbId);
+    } else {
+      playEpisode(1, imdbId);
     }
   };
 
@@ -244,18 +299,20 @@ export default function App() {
     localStorage.setItem(id, ep.toString());
 
     try {
-      const res = await fetch(`${API}/stream?imdb=${id}&ep=${ep}`);
-      const data = await res.json();
+      const data = await safeFetch(`${API}/stream?imdb=${id}&ep=${ep}`);
       
-      // Check if it's a direct HLS stream (VidPro)
-      if (data.videoUrl) {
+      if (data && data.videoUrl) {
         setStreamUrl(data.videoUrl);
         setSubtitles(data.subtitles || []);
         setIsHls(true);
-      } else {
+      } else if (data) {
         // Fallback to iframe URLs
         setIsHls(false);
         setStreamUrl(activeServer === 'primary' ? data.primary : data.backup);
+      } else {
+        // Complete fallback
+        setIsHls(false);
+        setStreamUrl(`https://vidsrc.to/embed/anime/${id}/${ep}`);
       }
     } catch (e) {
       console.error("Stream fetch error", e);
@@ -358,11 +415,33 @@ export default function App() {
         {loading && (
           <div className="flex flex-col items-center justify-center py-20 gap-4">
             <div className="w-12 h-12 border-4 border-brand border-t-transparent rounded-full animate-spin"></div>
-            <p className="text-zinc-500 font-medium animate-pulse">Fetching magic...</p>
+            <p className="text-zinc-500 font-medium animate-pulse">{loadingStatus}</p>
+            <button 
+              onClick={() => { setLoading(false); loadInitialData(); }}
+              className="mt-4 text-xs text-zinc-600 hover:text-brand underline"
+            >
+              Taking too long? Click to retry
+            </button>
           </div>
         )}
 
-        {!loading && (
+        {!loading && sections.length === 0 && results.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-20 gap-4 text-center">
+            <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mb-2">
+              <Info className="text-zinc-500" size={32} />
+            </div>
+            <h3 className="text-xl font-bold">No content found</h3>
+            <p className="text-zinc-500 max-w-xs">The API might be waking up. Please try again in a few seconds.</p>
+            <button 
+              onClick={() => loadInitialData()}
+              className="mt-4 bg-brand hover:bg-brand/80 px-8 py-3 rounded-xl text-sm font-bold transition-all"
+            >
+              Retry Loading
+            </button>
+          </div>
+        )}
+
+        {!loading && (sections.length > 0 || results.length > 0) && (
           <div className="flex flex-col lg:flex-row gap-8">
             {/* Main Content */}
             <div className="flex-1 space-y-12">
