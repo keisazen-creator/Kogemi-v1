@@ -40,7 +40,7 @@
 ## 🖥️ Preview
 
 <p align="center">
-  <img src="https://i.imgur.com/6Iej2c3.png" width="85%" />
+  <img src="https://i.imgur.com/6c3.png" width="85%" />
 </p>
 
 ---
